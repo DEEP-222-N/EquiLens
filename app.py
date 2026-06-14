@@ -16,14 +16,15 @@ from ratio_engine import (
     compute_all_ratios, compute_health_score, get_traffic_light,
     compute_dupont, compute_altman_z_score,
 )
-from dcf_model import compute_dcf, run_scenarios, sensitivity_matrix
+from dcf_model import compute_dcf, run_scenarios, sensitivity_matrix, compute_ddm, compute_comparable_valuation
 from visualizations import (
     price_chart, ratio_trend_chart, dupont_chart, radar_chart,
     football_field_chart, sensitivity_heatmap, altman_gauge,
-    health_score_gauge, peer_bar_chart, COLORS,
+    health_score_gauge, peer_bar_chart, comps_waterfall_chart, COLORS,
 )
 from narrative_generator import generate_narrative
 from pdf_exporter import generate_pdf
+from assumption_engine import compute_all_assumptions
 
 # ── Page config ──────────────────────────────────────────────────
 st.set_page_config(
@@ -71,7 +72,7 @@ with st.sidebar:
     st.markdown("*Equity Research Analyzer*")
     st.divider()
 
-    ticker = st.text_input("NSE Ticker", value="TCS.NS", help="Enter ticker with .NS suffix (e.g., RELIANCE.NS)")
+    ticker = st.text_input("Stock Name", value="TCS.NS", help="Enter ticker with .NS suffix (e.g., RELIANCE.NS)")
     if not ticker.endswith((".NS", ".BO")):
         ticker = ticker + ".NS"
 
@@ -79,14 +80,6 @@ with st.sidebar:
     st.markdown("### Peer Comparison")
     peers_input = st.text_input("Peer Tickers (comma-separated)", value="INFY.NS, WIPRO.NS, HCLTECH.NS")
     peer_tickers = [p.strip() for p in peers_input.split(",") if p.strip()]
-
-    st.divider()
-    st.markdown("### DCF Assumptions")
-    revenue_growth = st.slider("Revenue Growth Rate (%)", 0.0, 30.0, 12.0, 0.5) / 100
-    ebitda_margin = st.slider("EBITDA Margin (%)", 5.0, 50.0, 25.0, 0.5) / 100
-    wacc = st.slider("WACC (%)", 5.0, 20.0, 11.0, 0.5) / 100
-    terminal_growth = st.slider("Terminal Growth Rate (%)", 1.0, 6.0, 3.5, 0.25) / 100
-    tax_rate = st.slider("Tax Rate (%)", 10.0, 40.0, 25.0, 1.0) / 100
 
     st.divider()
     groq_key = os.getenv("GROQ_API_KEY", "")
@@ -102,7 +95,8 @@ def load_company_data(ticker: str):
     hist = get_historical_prices(ticker)
     financials = get_financials(ticker)
     metrics = extract_key_metrics(financials)
-    return info, hist, financials, metrics
+    assumptions = compute_all_assumptions(info, metrics) if not metrics.empty else None
+    return info, hist, financials, metrics, assumptions
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -129,12 +123,13 @@ def render_metric_card(label: str, value: str, delta: str = None, color: str = N
 if analyze_btn:
     with st.spinner(f"Fetching data for {ticker}..."):
         try:
-            info, hist, financials, metrics = load_company_data(ticker)
+            info, hist, financials, metrics, assumptions = load_company_data(ticker)
             st.session_state["data_loaded"] = True
             st.session_state["info"] = info
             st.session_state["hist"] = hist
             st.session_state["financials"] = financials
             st.session_state["metrics"] = metrics
+            st.session_state["assumptions"] = assumptions
             st.session_state["ticker"] = ticker
         except Exception as e:
             st.error(f"Failed to fetch data for {ticker}: {e}")
@@ -158,16 +153,29 @@ if not st.session_state.get("data_loaded", False):
 info = st.session_state["info"]
 hist = st.session_state["hist"]
 metrics = st.session_state["metrics"]
+assumptions = st.session_state["assumptions"]
 current_ticker = st.session_state["ticker"]
 
 if metrics.empty:
     st.warning("No financial data available for this ticker. Try a different company.")
     st.stop()
 
+# Use auto-computed assumptions
+revenue_growth = assumptions["revenue_growth"]
+ebitda_margin = assumptions["ebitda_margin"]
+wacc = assumptions["wacc"]
+terminal_growth = assumptions["terminal_growth"]
+tax_rate = assumptions["tax_rate"]
+capex_pct = assumptions["capex_pct"]
+nwc_pct = assumptions["nwc_pct"]
+da_pct = assumptions["da_pct"]
+
 # Compute ratios
 market_cap = info.get("market_cap", 0)
 all_ratios = compute_all_ratios(metrics, market_cap)
-health_score = compute_health_score(all_ratios)
+stock_sector = info.get("sector", "")
+health_result = compute_health_score(all_ratios, sector=stock_sector)
+health_score = health_result["score"]
 
 # Latest year metrics for DCF
 latest_year = metrics.columns[-1]
@@ -183,6 +191,9 @@ dcf_result = compute_dcf(
     wacc=wacc,
     terminal_growth=terminal_growth,
     tax_rate=tax_rate,
+    capex_pct=capex_pct,
+    nwc_pct=nwc_pct,
+    da_pct=da_pct,
     shares_outstanding=shares,
     net_debt=net_debt,
 )
@@ -195,6 +206,21 @@ scenarios = run_scenarios(
     shares_outstanding=shares,
     net_debt=net_debt,
     tax_rate=tax_rate,
+)
+
+# DDM
+risk_free = 0.071
+equity_risk_premium = 0.06
+beta_val = info.get("beta", 1.0) or 1.0
+cost_of_equity = risk_free + beta_val * equity_risk_premium
+dividend_per_share = info.get("dividend_rate", 0) or 0
+dividend_growth = max(revenue_growth * 0.6, 0.03)
+
+ddm_result = compute_ddm(
+    last_dividend_per_share=dividend_per_share,
+    dividend_growth_rate=dividend_growth,
+    cost_of_equity=cost_of_equity,
+    shares_outstanding=shares,
 )
 
 # Altman Z-Score (latest year)
@@ -243,8 +269,54 @@ with tab_overview:
             st.plotly_chart(price_chart(hist, current_ticker), use_container_width=True, key="overview_price")
 
     with col2:
-        st.plotly_chart(health_score_gauge(health_score), use_container_width=True, key="overview_health")
+        st.plotly_chart(health_score_gauge(health_score, health_result.get("grade", "")), use_container_width=True, key="overview_health")
         st.plotly_chart(altman_gauge(float(z_score), str(z_zone)), use_container_width=True, key="overview_altman")
+
+        # Category sub-scores
+        cat_scores = health_result.get("category_scores", {})
+        if cat_scores:
+            cat_cols = st.columns(len(cat_scores))
+            for i, (cat, data) in enumerate(cat_scores.items()):
+                with cat_cols[i]:
+                    st.metric(cat, f"{data['score']}", delta=data["grade"])
+
+        # Strengths / Weaknesses
+        strengths = health_result.get("strengths", [])
+        weaknesses = health_result.get("weaknesses", [])
+        if strengths:
+            st.markdown(f"**Strengths:** {', '.join(strengths)}")
+        if weaknesses:
+            st.markdown(f"**Weaknesses:** {', '.join(weaknesses)}")
+
+    # Auto-computed DCF Assumptions
+    st.markdown('<div class="section-header">Auto-Computed DCF Assumptions</div>', unsafe_allow_html=True)
+    a_row1 = st.columns(4)
+    rationale = assumptions["rationale"]
+    with a_row1[0]:
+        render_metric_card("Revenue Growth", f"{revenue_growth*100:.1f}%")
+        st.caption(rationale["revenue_growth"])
+    with a_row1[1]:
+        render_metric_card("EBITDA Margin", f"{ebitda_margin*100:.1f}%")
+        st.caption(rationale["ebitda_margin"])
+    with a_row1[2]:
+        render_metric_card("WACC", f"{wacc*100:.1f}%")
+        st.caption(rationale["wacc"])
+    with a_row1[3]:
+        render_metric_card("Terminal Growth", f"{terminal_growth*100:.1f}%")
+        st.caption(rationale["terminal_growth"])
+    a_row2 = st.columns(4)
+    with a_row2[0]:
+        render_metric_card("Tax Rate", f"{tax_rate*100:.1f}%")
+        st.caption(rationale["tax_rate"])
+    with a_row2[1]:
+        render_metric_card("Capex/Revenue", f"{capex_pct*100:.1f}%")
+        st.caption(rationale["capex_pct"])
+    with a_row2[2]:
+        render_metric_card("NWC/Revenue", f"{nwc_pct*100:.1f}%")
+        st.caption(rationale["nwc_pct"])
+    with a_row2[3]:
+        render_metric_card("D&A/Revenue", f"{da_pct*100:.1f}%")
+        st.caption(rationale["da_pct"])
 
     # AI Narrative
     st.markdown('<div class="section-header">AI Investment Summary</div>', unsafe_allow_html=True)
@@ -261,12 +333,24 @@ with tab_overview:
     )
     st.markdown(narrative)
 
+    # Comparable Valuation — computed here so football field can use it
+    comps_result = {"pe_comps": {"applicable": False}, "ev_ebitda_comps": {"applicable": False}}
+    if peer_tickers:
+        all_peer_tickers_ff = [current_ticker] + [t for t in peer_tickers if t != current_ticker]
+        peer_data_ff = load_peer_metrics(tuple(all_peer_tickers_ff))
+        peer_data_for_comps = {t: d for t, d in peer_data_ff.items() if t != current_ticker}
+        comps_result = compute_comparable_valuation(info, metrics, peer_data_for_comps)
+    st.session_state["comps_result"] = comps_result
+
     # Football Field Valuation
     st.markdown('<div class="section-header">Football Field Valuation</div>', unsafe_allow_html=True)
     st.plotly_chart(
         football_field_chart(
             cmp=cmp, scenarios=scenarios,
             high_52w=info.get("52w_high", 0), low_52w=info.get("52w_low", 0),
+            pe_comps=comps_result.get("pe_comps"),
+            ev_ebitda_comps=comps_result.get("ev_ebitda_comps"),
+            ddm_result=ddm_result,
         ),
         use_container_width=True, key="overview_football",
     )
@@ -282,7 +366,7 @@ with tab_ratios:
         tl_cols = st.columns(len(prof.index))
         for i, ratio_name in enumerate(prof.index):
             val = prof.loc[ratio_name, prof.columns[-1]]
-            light = get_traffic_light(ratio_name, val)
+            light = get_traffic_light(ratio_name, val, stock_sector)
             emoji = {"green": "🟢", "amber": "🟡", "red": "🔴"}.get(light, "⚪")
             tl_cols[i].metric(f"{emoji} {ratio_name}", f"{val:.1f}")
 
@@ -329,7 +413,11 @@ with tab_valuation:
 
     st.markdown("**Valuation Summary:**")
     val_data = {
-        "Component": ["Sum of PV(FCF)", "PV(Terminal Value)", "Enterprise Value", "Less: Net Debt", "Equity Value", "Shares Outstanding", "Intrinsic Value/Share"],
+        "Component": [
+            "Sum of PV(FCF)", "PV(Terminal Value)", "Enterprise Value",
+            "Less: Net Debt", "Equity Value", "Shares Outstanding",
+            "Intrinsic Value/Share",
+        ],
         "Value": [
             f"₹{dcf_result['sum_pv_fcf']/1e7:,.0f} Cr",
             f"₹{dcf_result['pv_terminal']/1e7:,.0f} Cr",
@@ -339,13 +427,116 @@ with tab_valuation:
             f"{shares/1e7:,.2f} Cr",
             f"₹{dcf_result['intrinsic_per_share']:,.2f}",
         ],
+        "Note": [
+            f"Capex: {capex_pct*100:.1f}% of Rev (historical)",
+            f"NWC: {nwc_pct*100:.1f}% of Rev (historical)",
+            "", "", "", "", "",
+        ],
     }
     st.dataframe(pd.DataFrame(val_data), use_container_width=True, hide_index=True)
+
+    # ── DDM Section ──
+    st.divider()
+    st.markdown('<div class="section-header">Dividend Discount Model (DDM)</div>', unsafe_allow_html=True)
+
+    if ddm_result.get("applicable"):
+        ddm_cols = st.columns(3)
+        ddm_val = ddm_result["intrinsic_per_share"]
+        ddm_upside = ((ddm_val - cmp) / cmp * 100) if cmp > 0 else 0
+        with ddm_cols[0]:
+            color = COLORS["green"] if ddm_upside > 0 else COLORS["red"]
+            render_metric_card("DDM Fair Value", f"₹{ddm_val:,.0f}", f"{ddm_upside:+.1f}% vs CMP", color)
+        with ddm_cols[1]:
+            render_metric_card("Dividend/Share", f"₹{info.get('dividend_rate', 0):.2f}")
+        with ddm_cols[2]:
+            render_metric_card("Dividend Growth", f"{ddm_result['high_growth_rate']*100:.1f}% → {ddm_result['terminal_growth']*100:.1f}%")
+
+        st.markdown("**DDM Breakdown:**")
+        ddm_data = {
+            "Component": [
+                "PV of High-Growth Dividends (5Y)",
+                "PV of Terminal Value",
+                "DDM Intrinsic Value/Share",
+            ],
+            "Value": [
+                f"₹{ddm_result['pv_high_growth_divs']:,.2f}",
+                f"₹{ddm_result['pv_terminal']:,.2f}",
+                f"₹{ddm_result['intrinsic_per_share']:,.2f}",
+            ],
+        }
+        st.dataframe(pd.DataFrame(ddm_data), use_container_width=True, hide_index=True)
+
+        if ddm_result.get("projected_dividends") is not None:
+            st.markdown("**Projected Dividends:**")
+            st.dataframe(ddm_result["projected_dividends"], use_container_width=True, hide_index=True)
+    else:
+        reason = ddm_result.get("reason", "Not applicable")
+        st.info(f"DDM not applicable: {reason}. This model works for dividend-paying stocks only.")
+
+    # ── Comparable Valuation Section ──
+    st.divider()
+    st.markdown('<div class="section-header">Comparable Valuation</div>', unsafe_allow_html=True)
+
+    comps_result = st.session_state.get("comps_result", {})
+    pe_comps = comps_result.get("pe_comps", {})
+    ev_ebitda_comps = comps_result.get("ev_ebitda_comps", {})
+
+    if pe_comps.get("applicable") or ev_ebitda_comps.get("applicable"):
+        comps_cols = st.columns(2)
+
+        if pe_comps.get("applicable"):
+            with comps_cols[0]:
+                pe_val = pe_comps["fair_value_median"]
+                pe_upside = ((pe_val - cmp) / cmp * 100) if cmp > 0 else 0
+                color = COLORS["green"] if pe_upside > 0 else COLORS["red"]
+                render_metric_card(
+                    "PE Comps Fair Value",
+                    f"₹{pe_val:,.0f}",
+                    f"{pe_upside:+.1f}% vs CMP (Median PE: {pe_comps['peer_median_pe']:.1f}x)",
+                    color,
+                )
+                st.plotly_chart(
+                    comps_waterfall_chart(pe_comps, "P/E Comps", cmp),
+                    use_container_width=True, key="comps_pe_chart",
+                )
+
+        if ev_ebitda_comps.get("applicable"):
+            with comps_cols[1 if pe_comps.get("applicable") else 0]:
+                ev_val = ev_ebitda_comps["fair_value_median"]
+                ev_upside = ((ev_val - cmp) / cmp * 100) if cmp > 0 else 0
+                color = COLORS["green"] if ev_upside > 0 else COLORS["red"]
+                render_metric_card(
+                    "EV/EBITDA Fair Value",
+                    f"₹{ev_val:,.0f}",
+                    f"{ev_upside:+.1f}% vs CMP (Median: {ev_ebitda_comps['peer_median_multiple']:.1f}x)",
+                    color,
+                )
+                st.plotly_chart(
+                    comps_waterfall_chart(ev_ebitda_comps, "EV/EBITDA Comps", cmp),
+                    use_container_width=True, key="comps_ev_chart",
+                )
+
+        # Summary table
+        st.markdown("**Valuation Summary Across Methods:**")
+        summary_rows = []
+        summary_rows.append({"Method": "DCF (Base)", "Fair Value": f"₹{dcf_result['intrinsic_per_share']:,.0f}",
+                             "vs CMP": f"{((dcf_result['intrinsic_per_share'] - cmp) / cmp * 100):+.1f}%" if cmp > 0 else "N/A"})
+        if pe_comps.get("applicable"):
+            summary_rows.append({"Method": "PE Comps (Median)", "Fair Value": f"₹{pe_comps['fair_value_median']:,.0f}",
+                                 "vs CMP": f"{((pe_comps['fair_value_median'] - cmp) / cmp * 100):+.1f}%" if cmp > 0 else "N/A"})
+        if ev_ebitda_comps.get("applicable"):
+            summary_rows.append({"Method": "EV/EBITDA Comps (Median)", "Fair Value": f"₹{ev_ebitda_comps['fair_value_median']:,.0f}",
+                                 "vs CMP": f"{((ev_ebitda_comps['fair_value_median'] - cmp) / cmp * 100):+.1f}%" if cmp > 0 else "N/A"})
+        if ddm_result.get("applicable"):
+            summary_rows.append({"Method": "DDM", "Fair Value": f"₹{ddm_result['intrinsic_per_share']:,.0f}",
+                                 "vs CMP": f"{((ddm_result['intrinsic_per_share'] - cmp) / cmp * 100):+.1f}%" if cmp > 0 else "N/A"})
+        st.dataframe(pd.DataFrame(summary_rows), use_container_width=True, hide_index=True)
+    else:
+        st.info("Add peer tickers in the sidebar to enable PE and EV/EBITDA comparable valuation.")
 
     st.divider()
 
     st.markdown('<div class="section-header">Sensitivity Analysis</div>', unsafe_allow_html=True)
-    st.markdown("*Adjust WACC and Terminal Growth in the sidebar to see real-time changes.*")
 
     sens_matrix = sensitivity_matrix(
         last_revenue=last_revenue,
@@ -369,6 +560,7 @@ with tab_valuation:
                 last_revenue=last_revenue, revenue_growth=revenue_growth,
                 ebitda_margin=ebitda_margin, wacc=quick_wacc,
                 terminal_growth=quick_tgr, tax_rate=tax_rate,
+                capex_pct=capex_pct, nwc_pct=nwc_pct, da_pct=da_pct,
                 shares_outstanding=shares, net_debt=net_debt,
             )
             quick_val = quick_dcf["intrinsic_per_share"]
@@ -467,7 +659,7 @@ with tab_risk:
             val = df.loc[ratio_name, latest_yr]
             if not isinstance(val, (int, float)):
                 continue
-            light = get_traffic_light(ratio_name, val)
+            light = get_traffic_light(ratio_name, val, stock_sector)
             emoji = {"green": "🟢", "amber": "🟡", "red": "🔴"}.get(light, "⚪")
             tl_data.append({
                 "Category": category.title(),
@@ -490,12 +682,14 @@ with col_pdf:
                 ticker=current_ticker,
                 stock_info=info,
                 all_ratios=all_ratios,
-                health_score=health_score,
+                health_score=health_result,
                 dcf_result=dcf_result,
                 scenarios=scenarios,
                 narrative=narrative if "narrative" in dir() else "Analysis not generated.",
                 z_score=float(z_score),
                 z_zone=str(z_zone),
+                ddm_result=ddm_result,
+                comps_result=st.session_state.get("comps_result"),
             )
             with open(pdf_path, "rb") as f:
                 st.download_button(

@@ -93,6 +93,8 @@ def generate_pdf(
     narrative: str,
     z_score: float,
     z_zone: str,
+    ddm_result: dict = None,
+    comps_result: dict = None,
 ) -> str:
     """
     Generate a full equity research PDF report.
@@ -116,7 +118,10 @@ def generate_pdf(
     pdf.ln(12)
 
     # Health Score
-    pdf.section_title(f"Financial Health Score: {health_score}/100")
+    hs_display = health_score if isinstance(health_score, (int, float)) else health_score.get("score", 0)
+    hs_grade = health_score.get("grade", "") if isinstance(health_score, dict) else ""
+    grade_str = f" (Grade: {hs_grade})" if hs_grade else ""
+    pdf.section_title(f"Financial Health Score: {hs_display}/100{grade_str}")
     pdf.body_text(f"Altman Z-Score: {z_score} ({z_zone} Zone)")
     pdf.ln(3)
 
@@ -137,6 +142,28 @@ def generate_pdf(
         pdf.body_text(f"Bear Case: INR {scenarios.get('Bear', 0):,.2f}")
         pdf.body_text(f"Base Case: INR {scenarios.get('Base', 0):,.2f}")
         pdf.body_text(f"Bull Case: INR {scenarios.get('Bull', 0):,.2f}")
+
+    # DDM
+    if ddm_result and ddm_result.get("applicable"):
+        pdf.ln(5)
+        pdf.section_title("Dividend Discount Model (DDM)")
+        pdf.body_text(f"DDM Intrinsic Value: INR {ddm_result['intrinsic_per_share']:,.2f}")
+        pdf.body_text(f"High Growth Phase: {ddm_result['high_growth_rate']*100:.1f}% for 5 years")
+        pdf.body_text(f"Terminal Growth: {ddm_result['terminal_growth']*100:.1f}%")
+
+    # Comparable Valuation
+    if comps_result:
+        pe = comps_result.get("pe_comps", {})
+        ev = comps_result.get("ev_ebitda_comps", {})
+        if pe.get("applicable") or ev.get("applicable"):
+            pdf.ln(5)
+            pdf.section_title("Comparable Valuation")
+            if pe.get("applicable"):
+                pdf.body_text(f"PE Comps Fair Value: INR {pe['fair_value_median']:,.2f} (Median PE: {pe['peer_median_pe']:.1f}x)")
+                pdf.body_text(f"  Range: INR {pe['fair_value_low']:,.2f} - INR {pe['fair_value_high']:,.2f}")
+            if ev.get("applicable"):
+                pdf.body_text(f"EV/EBITDA Fair Value: INR {ev['fair_value_median']:,.2f} (Median: {ev['peer_median_multiple']:.1f}x)")
+                pdf.body_text(f"  Range: INR {ev['fair_value_low']:,.2f} - INR {ev['fair_value_high']:,.2f}")
 
     # Ratio tables
     for category, df in all_ratios.items():

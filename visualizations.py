@@ -140,22 +140,32 @@ def radar_chart(peer_ratios: dict, ratio_names: list) -> go.Figure:
 
 def football_field_chart(
     cmp: float, scenarios: dict, high_52w: float, low_52w: float,
-    peer_avg_pe: float = 0, eps: float = 0
+    pe_comps: dict = None, ev_ebitda_comps: dict = None, ddm_result: dict = None,
 ) -> go.Figure:
     """
-    Football field valuation chart showing ranges across valuation methods.
+    Football field valuation chart showing ranges across all valuation methods.
     Horizontal bars from low to high, with CMP as a vertical reference line.
     """
     methods = []
     lows = []
     highs = []
     mids = []
+    bar_colors = []
+
+    color_palette = [
+        ("rgba(0, 212, 170, 0.3)", COLORS["primary"]),
+        ("rgba(78, 205, 196, 0.3)", COLORS["accent"]),
+        ("rgba(255, 230, 109, 0.3)", COLORS["warning"]),
+        ("rgba(167, 139, 250, 0.3)", "#A78BFA"),
+        ("rgba(244, 114, 182, 0.3)", "#F472B6"),
+    ]
 
     # 52-Week Range
-    methods.append("52-Week Range")
-    lows.append(low_52w)
-    highs.append(high_52w)
-    mids.append((low_52w + high_52w) / 2)
+    if high_52w > 0 and low_52w > 0:
+        methods.append("52-Week Range")
+        lows.append(low_52w)
+        highs.append(high_52w)
+        mids.append((low_52w + high_52w) / 2)
 
     # DCF scenarios
     if "Bear" in scenarios and "Bull" in scenarios:
@@ -164,32 +174,42 @@ def football_field_chart(
         highs.append(scenarios["Bull"])
         mids.append(scenarios.get("Base", (scenarios["Bear"] + scenarios["Bull"]) / 2))
 
-    # PE Comps (if peer data available)
-    if peer_avg_pe > 0 and eps > 0:
-        low_pe_val = eps * peer_avg_pe * 0.8
-        high_pe_val = eps * peer_avg_pe * 1.2
+    # PE Comps
+    if pe_comps and pe_comps.get("applicable"):
         methods.append("PE Comps")
-        lows.append(low_pe_val)
-        highs.append(high_pe_val)
-        mids.append(eps * peer_avg_pe)
+        lows.append(pe_comps["fair_value_low"])
+        highs.append(pe_comps["fair_value_high"])
+        mids.append(pe_comps["fair_value_median"])
+
+    # EV/EBITDA Comps
+    if ev_ebitda_comps and ev_ebitda_comps.get("applicable"):
+        methods.append("EV/EBITDA Comps")
+        lows.append(ev_ebitda_comps["fair_value_low"])
+        highs.append(ev_ebitda_comps["fair_value_high"])
+        mids.append(ev_ebitda_comps["fair_value_median"])
+
+    # DDM
+    if ddm_result and ddm_result.get("applicable") and ddm_result["intrinsic_per_share"] > 0:
+        ddm_val = ddm_result["intrinsic_per_share"]
+        methods.append("DDM")
+        lows.append(ddm_val * 0.85)
+        highs.append(ddm_val * 1.15)
+        mids.append(ddm_val)
 
     fig = go.Figure()
 
     for i, method in enumerate(methods):
+        fill_color, border_color = color_palette[i % len(color_palette)]
         fig.add_trace(go.Bar(
             y=[method], x=[highs[i] - lows[i]],
             base=lows[i], orientation="h",
-            marker=dict(
-                color=f"rgba(0, 212, 170, 0.3)",
-                line=dict(color=COLORS["primary"], width=1),
-            ),
+            marker=dict(color=fill_color, line=dict(color=border_color, width=1)),
             name=method, showlegend=False,
-            hovertemplate=f"{method}<br>Low: ₹{lows[i]:,.0f}<br>High: ₹{highs[i]:,.0f}<extra></extra>",
+            hovertemplate=f"{method}<br>Low: ₹{lows[i]:,.0f}<br>Mid: ₹{mids[i]:,.0f}<br>High: ₹{highs[i]:,.0f}<extra></extra>",
         ))
-        # Midpoint marker
         fig.add_trace(go.Scatter(
             x=[mids[i]], y=[method],
-            mode="markers", marker=dict(size=12, color=COLORS["accent"], symbol="diamond"),
+            mode="markers", marker=dict(size=12, color=border_color, symbol="diamond"),
             showlegend=False,
         ))
 
@@ -200,10 +220,11 @@ def football_field_chart(
         showarrow=False, font=dict(color=COLORS["secondary"], size=12),
     )
 
+    chart_height = max(280, 80 + len(methods) * 50)
     layout = {k: v for k, v in CHART_LAYOUT.items() if k != "yaxis"}
     fig.update_layout(
         **layout, title="Football Field Valuation",
-        xaxis_title="Price (₹)", height=300,
+        xaxis_title="Price (₹)", height=chart_height,
         yaxis=dict(gridcolor=COLORS["grid"]),
     )
     return fig
@@ -267,8 +288,8 @@ def altman_gauge(z_score: float, zone: str) -> go.Figure:
     return fig
 
 
-def health_score_gauge(score: int) -> go.Figure:
-    """Overall financial health gauge (0-100)."""
+def health_score_gauge(score: int, grade: str = "") -> go.Figure:
+    """Overall financial health gauge (0-100) with letter grade."""
     if score >= 70:
         bar_color = COLORS["green"]
     elif score >= 40:
@@ -276,10 +297,11 @@ def health_score_gauge(score: int) -> go.Figure:
     else:
         bar_color = COLORS["red"]
 
+    title_text = f"Health Score — {grade}" if grade else "Health Score"
     fig = go.Figure(go.Indicator(
         mode="gauge+number",
         value=score,
-        title={"text": "Health Score", "font": {"color": COLORS["text"], "size": 14}},
+        title={"text": title_text, "font": {"color": COLORS["text"], "size": 14}},
         number={"font": {"color": COLORS["text"], "size": 28}, "suffix": "/100"},
         gauge=dict(
             axis=dict(range=[0, 100], tickcolor=COLORS["text"], tickfont=dict(size=10)),
@@ -293,6 +315,52 @@ def health_score_gauge(score: int) -> go.Figure:
         ),
     ))
     fig.update_layout(paper_bgcolor=COLORS["bg"], font=dict(color=COLORS["text"]), height=220, margin=dict(l=20, r=20, t=40, b=10))
+    return fig
+
+
+def comps_waterfall_chart(comps: dict, method_name: str, cmp: float) -> go.Figure:
+    """Waterfall-style chart showing peer multiples vs implied fair value."""
+    peers = comps.get("peers", [])
+    if not peers:
+        return go.Figure()
+
+    if "pe" in peers[0]:
+        key = "pe"
+        mult_label = "P/E"
+    else:
+        key = "ev_ebitda"
+        mult_label = "EV/EBITDA"
+
+    tickers = [p["ticker"].replace(".NS", "") for p in peers]
+    values = [p[key] for p in peers]
+
+    median_val = comps.get("peer_median_pe", comps.get("peer_median_multiple", 0))
+    fair_value = comps.get("fair_value_median", 0)
+
+    fig = go.Figure()
+
+    fig.add_trace(go.Bar(
+        x=tickers, y=values,
+        marker_color=[COLORS["primary"] if v <= median_val else COLORS["accent"] for v in values],
+        text=[f"{v:.1f}x" for v in values],
+        textposition="outside",
+        name="Peer Multiple",
+    ))
+
+    fig.add_hline(
+        y=median_val,
+        line=dict(color=COLORS["warning"], width=2, dash="dash"),
+        annotation_text=f"Median: {median_val:.1f}x",
+        annotation_font=dict(color=COLORS["warning"]),
+    )
+
+    fig.update_layout(
+        **CHART_LAYOUT,
+        title=f"{method_name} — Peer Multiples (Fair Value: ₹{fair_value:,.0f})",
+        yaxis_title=f"{mult_label} Multiple",
+        height=350,
+        showlegend=False,
+    )
     return fig
 
 

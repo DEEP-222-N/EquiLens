@@ -15,6 +15,10 @@ def get_stock_info(ticker: str) -> dict:
     """Fetch basic stock info: name, sector, CMP, market cap, 52-week range."""
     stock = yf.Ticker(ticker)
     info = stock.info
+    dividend_rate = info.get("dividendRate", 0) or 0
+    trailing_eps = info.get("trailingEps", 0) or 0
+    payout_ratio = info.get("payoutRatio", 0) or 0
+
     return {
         "name": info.get("longName", ticker.replace(".NS", "")),
         "sector": info.get("sector", "N/A"),
@@ -24,6 +28,9 @@ def get_stock_info(ticker: str) -> dict:
         "pe_ratio": info.get("trailingPE", 0),
         "pb_ratio": info.get("priceToBook", 0),
         "dividend_yield": info.get("dividendYield", 0),
+        "dividend_rate": dividend_rate,
+        "trailing_eps": trailing_eps,
+        "payout_ratio": payout_ratio,
         "52w_high": info.get("fiftyTwoWeekHigh", 0),
         "52w_low": info.get("fiftyTwoWeekLow", 0),
         "beta": info.get("beta", 1.0),
@@ -100,11 +107,14 @@ def extract_key_metrics(financials: dict) -> pd.DataFrame:
             gross_profit = revenue - cogs
 
         operating_income = safe_get(income, ["Operating Income", "EBIT", "Operating Profit"], year)
+        da = safe_get(income, ["Depreciation And Amortization", "Depreciation & Amortisation",
+                                "Reconciled Depreciation"], year)
+        da = abs(da)
         ebitda = safe_get(income, ["EBITDA", "Normalized EBITDA"], year)
         if ebitda == 0:
-            da = safe_get(income, ["Depreciation And Amortization", "Depreciation & Amortisation",
-                                    "Reconciled Depreciation"], year)
-            ebitda = operating_income + abs(da)
+            ebitda = operating_income + da
+        if da == 0 and ebitda > 0 and operating_income > 0:
+            da = ebitda - operating_income
 
         net_income = safe_get(income, ["Net Income", "Net Income Common Stockholders",
                                         "Net Income From Continuing Operations"], year)
@@ -142,6 +152,7 @@ def extract_key_metrics(financials: dict) -> pd.DataFrame:
             "COGS": cogs,
             "Gross Profit": gross_profit,
             "EBITDA": ebitda,
+            "D&A": da,
             "Operating Income": operating_income,
             "Net Income": net_income,
             "Interest Expense": abs(interest_expense),
