@@ -288,6 +288,12 @@ narrative = generate_narrative(
     z_score=float(z_score),
     z_zone=str(z_zone),
     api_key=groq_key if groq_key else None,
+    scenarios=scenarios,
+    comps_result=comps_result,
+    rating_result=rating_result,
+    shareholding=st.session_state.get("shareholding", {}),
+    hist_returns=st.session_state.get("hist_returns", {}),
+    sector=info.get("sector", ""),
 )
 st.session_state["narrative"] = narrative
 

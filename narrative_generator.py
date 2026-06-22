@@ -1,6 +1,6 @@
 """
 AI narrative generator for EquiLens.
-Uses Groq API to produce plain-English investment summaries from financial data.
+Uses Groq API to produce a structured equity research note from financial data.
 Falls back to a rule-based summary when no API key is configured.
 """
 
@@ -9,44 +9,148 @@ import json
 import pandas as pd
 
 
-def _build_prompt(company_name: str, ticker: str, ratios: dict, health_score: int,
-                  cmp: float, intrinsic_value: float, z_score: float, z_zone: str) -> str:
-    """Construct the analysis prompt with key financial data baked in."""
-
-    # Extract latest-year ratios for the prompt
-    ratio_summary = {}
+def _extract_ratio_summary(ratios: dict) -> dict:
+    """Pull latest-year values from all ratio categories."""
+    summary = {}
     for category, df in ratios.items():
         if isinstance(df, pd.DataFrame) and not df.empty:
             latest = df.columns[-1]
             for idx in df.index:
                 val = df.loc[idx, latest]
                 if isinstance(val, (int, float)):
-                    ratio_summary[idx] = round(val, 2)
+                    summary[idx] = round(val, 2)
+    return summary
 
-    return f"""You are an equity research analyst writing for retail investors in India.
 
-Analyze {company_name} ({ticker}) using these latest financial ratios:
+def _build_prompt(
+    company_name: str, ticker: str, ratios: dict, health_score: int,
+    cmp: float, intrinsic_value: float, z_score: float, z_zone: str,
+    scenarios: dict = None, comps_result: dict = None,
+    rating_result: dict = None, shareholding: dict = None,
+    hist_returns: dict = None, sector: str = "",
+) -> str:
 
+    ratio_summary = _extract_ratio_summary(ratios)
+
+    # Build multi-year trend context
+    trend_lines = []
+    key_ratios_for_trend = ["ROE %", "Net Margin %", "ROCE %", "Current Ratio", "Debt/Equity"]
+    for category, df in ratios.items():
+        if not isinstance(df, pd.DataFrame) or df.empty:
+            continue
+        for ratio_name in key_ratios_for_trend:
+            if ratio_name in df.index:
+                vals = df.loc[ratio_name]
+                trend = {str(yr): round(float(v), 2) for yr, v in vals.items() if isinstance(v, (int, float))}
+                if trend:
+                    trend_lines.append(f"  {ratio_name}: {json.dumps(trend)}")
+
+    trend_block = "\n".join(trend_lines) if trend_lines else "  Not available"
+
+    # Valuation context
+    valuation_block = f"- DCF Intrinsic Value: ₹{intrinsic_value:,.2f} per share"
+    if cmp > 0 and intrinsic_value > 0:
+        upside = ((intrinsic_value - cmp) / cmp) * 100
+        valuation_block += f" ({upside:+.1f}% vs CMP)"
+
+    if scenarios:
+        valuation_block += "\n- DCF Scenarios: " + ", ".join(
+            f"{k}: ₹{v:,.0f}" for k, v in scenarios.items()
+        )
+
+    if comps_result:
+        pe = comps_result.get("pe_comps", {})
+        ev = comps_result.get("ev_ebitda_comps", {})
+        if pe.get("applicable"):
+            valuation_block += f"\n- PE Comps Fair Value: ₹{pe['fair_value_median']:,.0f} (range: ₹{pe['fair_value_low']:,.0f}-₹{pe['fair_value_high']:,.0f}, peer median PE: {pe['peer_median_pe']:.1f}x)"
+        if ev.get("applicable"):
+            valuation_block += f"\n- EV/EBITDA Comps Fair Value: ₹{ev['fair_value_median']:,.0f} (range: ₹{ev['fair_value_low']:,.0f}-₹{ev['fair_value_high']:,.0f})"
+
+    if rating_result and rating_result.get("rating") != "N/A":
+        valuation_block += f"\n- Blended Rating: {rating_result['rating']} | Target: ₹{rating_result['target_price']:,.0f} ({rating_result['upside']:+.1f}%) | Confidence: {rating_result['confidence']}"
+
+    # Shareholding
+    holding_block = "Not available"
+    if shareholding and any(v > 0 for v in shareholding.values()):
+        holding_block = ", ".join(f"{k}: {v:.1f}%" for k, v in shareholding.items() if v > 0)
+
+    # Historical returns
+    returns_block = "Not available"
+    if hist_returns:
+        parts = []
+        for period in ["1Y", "3Y", "5Y"]:
+            data = hist_returns.get(period, {})
+            s = data.get("stock")
+            b = data.get("benchmark")
+            if s is not None:
+                bench = f", Nifty: {b:+.1f}%" if b is not None else ""
+                parts.append(f"{period}: {s:+.1f}%{bench}")
+        if parts:
+            returns_block = " | ".join(parts)
+
+    return f"""You are a senior equity research analyst at a top Indian brokerage, writing a concise but institutional-quality investment note for retail investors. Your tone is confident, data-driven, and clear — no jargon without explanation.
+
+═══════════════════════════════════════════
+COMPANY: {company_name} ({ticker})
+SECTOR: {sector or 'N/A'}
+CMP: ₹{cmp:,.2f}
+═══════════════════════════════════════════
+
+LATEST FINANCIAL RATIOS:
 {json.dumps(ratio_summary, indent=2)}
 
-Additional context:
-- Current Market Price (CMP): ₹{cmp:,.2f}
-- DCF Intrinsic Value: ₹{intrinsic_value:,.2f}
+MULTI-YEAR TRENDS (key ratios):
+{trend_block}
+
+VALUATION:
+{valuation_block}
+
+FINANCIAL HEALTH:
+- Overall Score: {health_score}/100
 - Altman Z-Score: {z_score} ({z_zone} zone)
-- Overall Financial Health Score: {health_score}/100
 
-Provide:
-1. A 5-line investment summary (plain English, no jargon)
-2. Top 3 strengths (bullet points)
-3. Top 3 red flags or concerns (bullet points)
+SHAREHOLDING: {holding_block}
 
-Keep it concise, actionable, and suitable for retail investors. Use ₹ for currency."""
+STOCK PERFORMANCE: {returns_block}
+
+═══════════════════════════════════════════
+
+Write a structured investment note with these EXACT sections:
+
+**Investment Thesis** (3-4 sentences)
+Start with whether this is a BUY/HOLD/AVOID and why, in plain English. Mention the core business strength or weakness. State the valuation gap if any (undervalued/overvalued/fairly valued with % and target). End with who this stock is suitable for (growth investors, value investors, income investors, etc.).
+
+**Key Strengths** (3-4 bullet points)
+Each bullet should cite a specific ratio or data point with the number. Don't just say "good profitability" — say "Net margins of 18.5% are best-in-class for IT services, consistently above 15% for 4 years."
+
+**Risk Factors** (2-3 bullet points)
+Real, specific risks backed by data. If D/E is rising, say by how much. If margins are compressing, show the trend. If the stock trades at a premium to peers, quantify it. Include at least one sector/macro risk.
+
+**Valuation Summary** (2-3 sentences)
+Compare DCF intrinsic value vs CMP. Reference peer comps if available. State whether current price offers a margin of safety or not.
+
+**Bottom Line** (1-2 sentences)
+A clear, actionable conclusion. Example: "At ₹3,800, TCS offers limited upside to our target of ₹4,100, but quality commands a premium. Accumulate on dips below ₹3,500."
+
+RULES:
+- Use ₹ for all currency values
+- Always cite specific numbers from the data provided — never make up figures
+- If a ratio or data point is missing/zero, skip it rather than guessing
+- Keep total length under 400 words
+- Do NOT use generic filler like "investors should do their own research"
+- Write with conviction — take a clear stance"""
 
 
 def generate_narrative(
     company_name: str, ticker: str, ratios: dict, health_score: int,
     cmp: float, intrinsic_value: float, z_score: float, z_zone: str,
     api_key: str = None,
+    scenarios: dict = None,
+    comps_result: dict = None,
+    rating_result: dict = None,
+    shareholding: dict = None,
+    hist_returns: dict = None,
+    sector: str = "",
 ) -> str:
     """
     Generate an AI-powered investment narrative.
@@ -56,7 +160,10 @@ def generate_narrative(
         try:
             return _groq_generate(
                 company_name, ticker, ratios, health_score,
-                cmp, intrinsic_value, z_score, z_zone, api_key
+                cmp, intrinsic_value, z_score, z_zone, api_key,
+                scenarios=scenarios, comps_result=comps_result,
+                rating_result=rating_result, shareholding=shareholding,
+                hist_returns=hist_returns, sector=sector,
             )
         except Exception:
             return _rule_based_summary(company_name, ratios, health_score, cmp, intrinsic_value, z_score, z_zone)
@@ -68,18 +175,33 @@ def _groq_generate(
     company_name: str, ticker: str, ratios: dict, health_score: int,
     cmp: float, intrinsic_value: float, z_score: float, z_zone: str,
     api_key: str,
+    scenarios: dict = None, comps_result: dict = None,
+    rating_result: dict = None, shareholding: dict = None,
+    hist_returns: dict = None, sector: str = "",
 ) -> str:
-    """Call Groq API with the financial analysis prompt."""
+    """Call Groq API with the enriched financial analysis prompt."""
     from groq import Groq
 
     client = Groq(api_key=api_key)
-    prompt = _build_prompt(company_name, ticker, ratios, health_score, cmp, intrinsic_value, z_score, z_zone)
+    prompt = _build_prompt(
+        company_name, ticker, ratios, health_score,
+        cmp, intrinsic_value, z_score, z_zone,
+        scenarios=scenarios, comps_result=comps_result,
+        rating_result=rating_result, shareholding=shareholding,
+        hist_returns=hist_returns, sector=sector,
+    )
 
     response = client.chat.completions.create(
         model="llama-3.3-70b-versatile",
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0.4,
-        max_tokens=800,
+        messages=[
+            {
+                "role": "system",
+                "content": "You are EquiLens AI, an expert Indian equity research analyst. You produce concise, data-rich investment notes. Always use markdown formatting. Never fabricate data — only reference numbers provided in the prompt."
+            },
+            {"role": "user", "content": prompt},
+        ],
+        temperature=0.3,
+        max_tokens=1200,
     )
     return response.choices[0].message.content
 
@@ -92,7 +214,6 @@ def _rule_based_summary(
     strengths = []
     red_flags = []
 
-    # Extract latest values
     def _latest(category: str, ratio_name: str):
         df = ratios.get(category, pd.DataFrame())
         if isinstance(df, pd.DataFrame) and ratio_name in df.index and not df.empty:
@@ -134,7 +255,6 @@ def _rule_based_summary(
     elif z_zone == "Safe":
         strengths.append(f"Altman Z-Score of {z_score} indicates strong financial stability")
 
-    # Valuation
     valuation_note = ""
     if intrinsic_value > 0:
         upside = ((intrinsic_value - cmp) / cmp) * 100
