@@ -9,12 +9,29 @@ import numpy as np
 import requests
 from bs4 import BeautifulSoup
 from datetime import datetime, timedelta
+import time
+import random
+
+
+def _retry_yf(func, max_retries=3, base_delay=2):
+    """Retry a yfinance call with exponential backoff to handle rate limiting."""
+    for attempt in range(max_retries):
+        try:
+            return func()
+        except Exception as e:
+            err_str = str(e).lower()
+            if "too many requests" in err_str or "rate" in err_str or "429" in err_str:
+                delay = base_delay * (2 ** attempt) + random.uniform(0.5, 1.5)
+                time.sleep(delay)
+                continue
+            raise
+    return func()
 
 
 def get_stock_info(ticker: str) -> dict:
     """Fetch basic stock info: name, sector, CMP, market cap, 52-week range."""
     stock = yf.Ticker(ticker)
-    info = stock.info
+    info = _retry_yf(lambda: stock.info)
     dividend_rate = info.get("dividendRate", 0) or 0
     trailing_eps = info.get("trailingEps", 0) or 0
     payout_ratio = info.get("payoutRatio", 0) or 0
@@ -42,7 +59,7 @@ def get_stock_info(ticker: str) -> dict:
 def get_historical_prices(ticker: str, period: str = "5y") -> pd.DataFrame:
     """Fetch historical price data for charting."""
     stock = yf.Ticker(ticker)
-    hist = stock.history(period=period)
+    hist = _retry_yf(lambda: stock.history(period=period))
     return hist
 
 
@@ -54,11 +71,11 @@ def get_financials(ticker: str) -> dict:
     stock = yf.Ticker(ticker)
 
     financials = {
-        "income_stmt": _clean_financial_df(stock.financials),
-        "balance_sheet": _clean_financial_df(stock.balance_sheet),
-        "cashflow": _clean_financial_df(stock.cashflow),
-        "quarterly_income": _clean_financial_df(stock.quarterly_financials),
-        "quarterly_balance": _clean_financial_df(stock.quarterly_balance_sheet),
+        "income_stmt": _clean_financial_df(_retry_yf(lambda: stock.financials)),
+        "balance_sheet": _clean_financial_df(_retry_yf(lambda: stock.balance_sheet)),
+        "cashflow": _clean_financial_df(_retry_yf(lambda: stock.cashflow)),
+        "quarterly_income": _clean_financial_df(_retry_yf(lambda: stock.quarterly_financials)),
+        "quarterly_balance": _clean_financial_df(_retry_yf(lambda: stock.quarterly_balance_sheet)),
     }
     return financials
 

@@ -162,7 +162,11 @@ if analyze_btn:
             st.session_state["hist_returns"] = hist_returns
             st.session_state["ticker"] = ticker
         except Exception as e:
-            st.error(f"Failed to fetch data for {ticker}: {e}")
+            err_msg = str(e).lower()
+            if "too many requests" in err_msg or "rate" in err_msg or "429" in err_msg:
+                st.error(f"⏳ Yahoo Finance rate limited. Please wait 30 seconds and click Analyze again.")
+            else:
+                st.error(f"Failed to fetch data for {ticker}: {e}")
             st.stop()
 
 # ── Landing page when no analysis done yet ───────────────────────
