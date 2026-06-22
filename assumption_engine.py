@@ -128,8 +128,13 @@ def compute_terminal_growth(info: dict) -> float:
     return 0.035
 
 
-def compute_capex_pct(metrics: pd.DataFrame) -> float:
-    """Average Capex as % of Revenue from historicals."""
+def compute_capex_pct(metrics: pd.DataFrame, ebitda_margin: float = 0.20) -> float:
+    """
+    Average Capex as % of Revenue from historicals.
+    Capped at 70% of EBITDA margin to avoid growth-capex spikes
+    (e.g., Reliance Jio buildout) killing the DCF.
+    Falls back toward D&A (maintenance capex proxy) when raw capex looks abnormally high.
+    """
     if metrics.empty:
         return 0.05
 
@@ -144,7 +149,26 @@ def compute_capex_pct(metrics: pd.DataFrame) -> float:
         return 0.05
 
     avg = np.mean(pcts)
-    return np.clip(avg, 0.01, 0.25)
+
+    # D&A is a proxy for maintenance capex — capex shouldn't be below this
+    da_pct = 0.03
+    if not metrics.empty and "D&A" in metrics.index:
+        da_vals = []
+        for year in metrics.columns:
+            rev = metrics.loc["Revenue", year] if "Revenue" in metrics.index else 0
+            da = metrics.loc["D&A", year] if "D&A" in metrics.index else 0
+            if rev > 0 and da > 0:
+                da_vals.append(da / rev)
+        if da_vals:
+            da_pct = np.mean(da_vals)
+
+    # Cap capex at 70% of EBITDA margin — beyond that, growth capex is distorting
+    max_capex = ebitda_margin * 0.70
+    if avg > max_capex:
+        # Blend: 60% maintenance (D&A) + 40% historical, capped
+        avg = da_pct * 0.6 + min(avg, max_capex) * 0.4
+
+    return np.clip(avg, 0.01, 0.20)
 
 
 def compute_nwc_pct(metrics: pd.DataFrame) -> float:
@@ -195,7 +219,7 @@ def compute_all_assumptions(info: dict, metrics: pd.DataFrame) -> dict:
     wacc = compute_wacc(info, metrics)
     terminal_growth = compute_terminal_growth(info)
     tax_rate = compute_effective_tax_rate(metrics)
-    capex_pct = compute_capex_pct(metrics)
+    capex_pct = compute_capex_pct(metrics, ebitda_margin)
     nwc_pct = compute_nwc_pct(metrics)
     da_pct = compute_da_pct(metrics)
 

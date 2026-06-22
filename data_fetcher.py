@@ -220,18 +220,257 @@ def scrape_screener_ratios(ticker_symbol: str) -> dict:
         return {}
 
 
+def _scrape_screener_shareholding(ticker: str) -> dict:
+    """Scrape latest shareholding pattern from Screener.in."""
+    symbol = ticker.replace(".NS", "").replace(".BO", "")
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+    result = {}
+
+    for url in [
+        f"https://www.screener.in/company/{symbol}/consolidated/",
+        f"https://www.screener.in/company/{symbol}/",
+    ]:
+        try:
+            resp = requests.get(url, headers=headers, timeout=10)
+            if resp.status_code != 200:
+                continue
+
+            soup = BeautifulSoup(resp.text, "lxml")
+            for heading in soup.find_all(["h2", "h3", "h4"]):
+                if "shareholding" in heading.get_text(strip=True).lower():
+                    table = heading.find_next("table")
+                    if not table:
+                        continue
+                    for row in table.find_all("tr"):
+                        cols = row.find_all(["td", "th"])
+                        if len(cols) < 2:
+                            continue
+                        label = cols[0].get_text(strip=True).lower().rstrip("+")
+                        last_val = cols[-1].get_text(strip=True).replace("%", "").replace(",", "")
+                        try:
+                            pct = float(last_val)
+                        except ValueError:
+                            continue
+
+                        if "promoter" in label:
+                            result["Promoters"] = result.get("Promoters", 0) + pct
+                        elif "fii" in label or "foreign" in label:
+                            result["FII"] = result.get("FII", 0) + pct
+                        elif "dii" in label or ("domestic" in label and "institut" in label):
+                            result["DII"] = result.get("DII", 0) + pct
+                        elif "government" in label:
+                            result["Promoters"] = result.get("Promoters", 0) + pct
+                        elif "public" in label:
+                            result["Retail & Others"] = result.get("Retail & Others", 0) + pct
+
+                    if result:
+                        return result
+        except Exception:
+            continue
+
+    return result
+
+
+def get_shareholding_pattern(ticker: str) -> dict:
+    """Fetch shareholding pattern — tries yfinance first, falls back to Screener.in."""
+    stock = yf.Ticker(ticker)
+    result = {
+        "Promoters": 0,
+        "FII": 0,
+        "DII": 0,
+        "Retail & Others": 0,
+    }
+
+    try:
+        holders = stock.major_holders
+        if holders is not None and not holders.empty:
+            for _, row in holders.iterrows():
+                label = str(row.iloc[1]).lower() if len(row) > 1 else ""
+                pct = float(str(row.iloc[0]).replace("%", "")) if row.iloc[0] else 0
+
+                if "insider" in label or "promoter" in label:
+                    result["Promoters"] += pct
+                elif "institution" in label:
+                    result["DII"] += pct
+                elif "float" in label or "public" in label:
+                    result["Retail & Others"] += pct
+
+        inst = stock.institutional_holders
+        if inst is not None and not inst.empty and "pctHeld" in inst.columns:
+            total_inst_pct = inst["pctHeld"].sum() * 100
+            fii_estimate = total_inst_pct * 0.5
+            result["FII"] = round(fii_estimate, 2)
+            result["DII"] = round(max(0, result["DII"] - fii_estimate), 2)
+
+    except Exception:
+        pass
+
+    total = sum(result.values())
+    if total > 0 and abs(total - 100) > 5:
+        result["Retail & Others"] = round(max(0, 100 - result["Promoters"] - result["FII"] - result["DII"]), 2)
+
+    # Fallback to Screener.in if yfinance returned nothing useful
+    if total == 0 or all(v == 0 for v in result.values()):
+        screener_data = _scrape_screener_shareholding(ticker)
+        if screener_data:
+            result = {
+                "Promoters": round(screener_data.get("Promoters", 0), 2),
+                "FII": round(screener_data.get("FII", 0), 2),
+                "DII": round(screener_data.get("DII", 0), 2),
+                "Retail & Others": round(screener_data.get("Retail & Others", 0), 2),
+            }
+
+    return result
+
+
+def get_historical_returns(ticker: str, benchmark: str = "^NSEI") -> dict:
+    """Compute 1Y, 3Y, 5Y returns for stock and benchmark (Nifty 50)."""
+    stock = yf.Ticker(ticker)
+    bench = yf.Ticker(benchmark)
+    now = datetime.now()
+
+    periods = {
+        "1Y": timedelta(days=365),
+        "3Y": timedelta(days=365 * 3),
+        "5Y": timedelta(days=365 * 5),
+    }
+
+    result = {}
+    for label, delta in periods.items():
+        start = now - delta
+        try:
+            s_hist = stock.history(start=start, end=now)
+            b_hist = bench.history(start=start, end=now)
+
+            if s_hist.empty or len(s_hist) < 2:
+                result[label] = {"stock": None, "benchmark": None}
+                continue
+
+            s_return = ((s_hist["Close"].iloc[-1] / s_hist["Close"].iloc[0]) - 1) * 100
+            b_return = None
+            if not b_hist.empty and len(b_hist) >= 2:
+                b_return = ((b_hist["Close"].iloc[-1] / b_hist["Close"].iloc[0]) - 1) * 100
+
+            result[label] = {
+                "stock": round(float(s_return), 1),
+                "benchmark": round(float(b_return), 1) if b_return is not None else None,
+            }
+        except Exception:
+            result[label] = {"stock": None, "benchmark": None}
+
+    return result
+
+
+def _screener_to_metrics(screener_ratios: dict, info: dict) -> pd.DataFrame:
+    """Convert Screener.in ratios into a single-year metrics DataFrame compatible with compute_all_ratios."""
+    if not screener_ratios:
+        return pd.DataFrame()
+
+    mcap = info.get("market_cap", 0)
+    cmp = info.get("cmp", 0)
+    pe = info.get("pe_ratio", 0) or 0
+    shares = info.get("shares_outstanding", 0) or 0
+
+    net_income = (cmp / pe * shares) if pe > 0 and shares > 0 else 0
+    revenue = screener_ratios.get("Sales", 0) or 0
+    if revenue == 0 and net_income > 0:
+        net_margin_pct = screener_ratios.get("Net Profit Margin", 10)
+        if isinstance(net_margin_pct, (int, float)) and net_margin_pct > 0:
+            revenue = net_income / (net_margin_pct / 100)
+
+    roe = screener_ratios.get("ROE", 0)
+    if isinstance(roe, str):
+        roe = 0
+    equity = net_income / (roe / 100) if roe > 0 else 0
+
+    roce = screener_ratios.get("ROCE", 0)
+    if isinstance(roce, str):
+        roce = 0
+
+    current_ratio = screener_ratios.get("Current Ratio", 0)
+    if isinstance(current_ratio, str):
+        current_ratio = 0
+
+    de = screener_ratios.get("Debt to Equity", 0)
+    if isinstance(de, str):
+        de = 0
+    total_debt = equity * de if equity > 0 else 0
+    total_assets = equity + total_debt if equity > 0 else mcap
+
+    ebitda_margin = screener_ratios.get("OPM", 20)
+    if isinstance(ebitda_margin, str):
+        ebitda_margin = 20
+    ebitda = revenue * ebitda_margin / 100 if revenue > 0 else 0
+
+    current_liabilities = total_assets * 0.2 if total_assets > 0 else 0
+    current_assets = current_ratio * current_liabilities if current_liabilities > 0 else 0
+
+    metrics = {
+        "latest": {
+            "Revenue": revenue,
+            "COGS": revenue * 0.6,
+            "Gross Profit": revenue * 0.4,
+            "EBITDA": ebitda,
+            "D&A": ebitda * 0.15,
+            "Operating Income": ebitda * 0.85,
+            "Net Income": net_income,
+            "Interest Expense": 0,
+            "Tax": 0,
+            "Total Assets": total_assets,
+            "Total Equity": equity,
+            "Total Debt": total_debt,
+            "Current Assets": current_assets,
+            "Current Liabilities": current_liabilities,
+            "Inventory": 0,
+            "Receivables": 0,
+            "Payables": 0,
+            "Cash": 0,
+            "Retained Earnings": equity * 0.7,
+            "Working Capital": current_assets - current_liabilities,
+            "Operating Cash Flow": 0,
+            "Capex": 0,
+            "Free Cash Flow": 0,
+        }
+    }
+    return pd.DataFrame(metrics)
+
+
 def get_peer_data(peer_tickers: list) -> dict:
-    """Fetch key metrics for a list of peer tickers for benchmarking."""
+    """
+    Fetch key metrics for a list of peer tickers.
+    Tries yfinance first, falls back to Screener.in if financials are empty.
+    """
     peer_data = {}
     for ticker in peer_tickers:
         try:
             info = get_stock_info(ticker)
             financials = get_financials(ticker)
             key_metrics = extract_key_metrics(financials)
+
+            if key_metrics.empty:
+                screener = scrape_screener_ratios(ticker)
+                key_metrics = _screener_to_metrics(screener, info)
+
             peer_data[ticker] = {
                 "info": info,
                 "metrics": key_metrics,
             }
         except Exception:
-            peer_data[ticker] = {"info": {"name": ticker, "error": True}, "metrics": pd.DataFrame()}
+            try:
+                stock = yf.Ticker(ticker)
+                yf_info = stock.info
+                info = {
+                    "name": yf_info.get("longName", ticker.replace(".NS", "")),
+                    "sector": yf_info.get("sector", "N/A"),
+                    "industry": yf_info.get("industry", "N/A"),
+                    "cmp": yf_info.get("currentPrice", yf_info.get("regularMarketPrice", 0)),
+                    "market_cap": yf_info.get("marketCap", 0),
+                    "pe_ratio": yf_info.get("trailingPE", 0),
+                    "shares_outstanding": yf_info.get("sharesOutstanding", 0),
+                }
+                screener = scrape_screener_ratios(ticker)
+                key_metrics = _screener_to_metrics(screener, info)
+                peer_data[ticker] = {"info": info, "metrics": key_metrics}
+            except Exception:
+                peer_data[ticker] = {"info": {"name": ticker, "error": True}, "metrics": pd.DataFrame()}
     return peer_data

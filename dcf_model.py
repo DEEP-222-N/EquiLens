@@ -1,6 +1,6 @@
 """
 Valuation models for EquiLens.
-DCF, Dividend Discount Model (DDM), and Comparable Valuation (PE & EV/EBITDA comps).
+DCF and Comparable Valuation (PE & EV/EBITDA comps).
 """
 
 import numpy as np
@@ -184,57 +184,6 @@ def sensitivity_matrix(
     return pd.DataFrame(matrix)
 
 
-# ── Dividend Discount Model (DDM) ──────────────────────────────
-
-def compute_ddm(
-    last_dividend_per_share: float,
-    dividend_growth_rate: float,
-    cost_of_equity: float,
-    shares_outstanding: float = 1,
-) -> dict:
-    """
-    Gordon Growth DDM: P = D1 / (Ke - g)
-    Two-stage variant: 5 years of high growth, then perpetuity at terminal growth.
-    Returns intrinsic value per share and breakdown.
-    """
-    if last_dividend_per_share <= 0:
-        return {"intrinsic_per_share": 0, "applicable": False, "reason": "No dividends paid"}
-
-    if cost_of_equity <= dividend_growth_rate:
-        return {"intrinsic_per_share": 0, "applicable": False, "reason": "Ke must exceed growth rate"}
-
-    terminal_growth = min(dividend_growth_rate, 0.05)
-    high_growth = min(dividend_growth_rate * 1.2, 0.20)
-    high_growth_years = 5
-
-    pv_dividends = 0
-    projected_divs = []
-    current_div = last_dividend_per_share
-
-    for year in range(1, high_growth_years + 1):
-        current_div = current_div * (1 + high_growth)
-        pv = current_div / (1 + cost_of_equity) ** year
-        pv_dividends += pv
-        projected_divs.append({"Year": year, "Dividend": round(current_div, 2), "PV": round(pv, 2)})
-
-    terminal_div = current_div * (1 + terminal_growth)
-    terminal_value = terminal_div / (cost_of_equity - terminal_growth)
-    pv_terminal = terminal_value / (1 + cost_of_equity) ** high_growth_years
-
-    intrinsic = pv_dividends + pv_terminal
-
-    return {
-        "intrinsic_per_share": round(intrinsic, 2),
-        "applicable": True,
-        "pv_high_growth_divs": round(pv_dividends, 2),
-        "terminal_value": round(terminal_value, 2),
-        "pv_terminal": round(pv_terminal, 2),
-        "high_growth_rate": round(high_growth, 4),
-        "terminal_growth": round(terminal_growth, 4),
-        "projected_dividends": pd.DataFrame(projected_divs),
-    }
-
-
 # ── Comparable Valuation (PE & EV/EBITDA) ──────────────────────
 
 def compute_comparable_valuation(
@@ -342,3 +291,82 @@ def compute_comparable_valuation(
         }
 
     return result
+
+
+def compute_target_price_and_rating(
+    cmp: float,
+    dcf_result: dict,
+    scenarios: dict,
+    comps_result: dict = None,
+    health_score: int = 50,
+) -> dict:
+    """
+    Blend valuation methods into a single target price and Buy/Hold/Sell rating.
+    Weights: DCF 45%, Comps (PE+EV/EBITDA avg) 40%, Scenario midpoint 15%.
+    """
+    valuations = {}
+    weights = {}
+
+    dcf_val = dcf_result.get("intrinsic_per_share", 0)
+    if dcf_val > 0:
+        valuations["DCF"] = dcf_val
+        weights["DCF"] = 0.45
+
+    comps_vals = []
+    if comps_result:
+        pe = comps_result.get("pe_comps", {})
+        if pe.get("applicable") and pe.get("fair_value_median", 0) > 0:
+            comps_vals.append(pe["fair_value_median"])
+        ev = comps_result.get("ev_ebitda_comps", {})
+        if ev.get("applicable") and ev.get("fair_value_median", 0) > 0:
+            comps_vals.append(ev["fair_value_median"])
+    if comps_vals:
+        valuations["Comps"] = np.mean(comps_vals)
+        weights["Comps"] = 0.40
+
+    if "Bear" in scenarios and "Bull" in scenarios:
+        valuations["Scenario"] = (scenarios["Bear"] + scenarios["Bull"]) / 2
+        weights["Scenario"] = 0.15
+
+    if not valuations:
+        return {"target_price": 0, "upside": 0, "rating": "N/A", "confidence": "Low", "methods_used": 0}
+
+    total_weight = sum(weights.values())
+    target_price = sum(valuations[k] * weights[k] for k in valuations) / total_weight
+
+    upside = ((target_price - cmp) / cmp * 100) if cmp > 0 else 0
+
+    health_bonus = max(0, (health_score - 50) / 100) * 5
+    buy_threshold = 15 - health_bonus
+    sell_threshold = -15 + health_bonus
+
+    if upside >= buy_threshold:
+        rating = "BUY"
+    elif upside <= sell_threshold:
+        rating = "SELL"
+    else:
+        rating = "HOLD"
+
+    method_count = len(valuations)
+    if method_count >= 3:
+        vals = list(valuations.values())
+        spread = (max(vals) - min(vals)) / np.mean(vals) * 100 if np.mean(vals) > 0 else 100
+        if spread < 20:
+            confidence = "High"
+        elif spread < 40:
+            confidence = "Medium"
+        else:
+            confidence = "Low"
+    elif method_count == 2:
+        confidence = "Medium"
+    else:
+        confidence = "Low"
+
+    return {
+        "target_price": round(target_price, 2),
+        "upside": round(upside, 1),
+        "rating": rating,
+        "confidence": confidence,
+        "methods_used": method_count,
+        "method_values": {k: round(v, 2) for k, v in valuations.items()},
+    }

@@ -140,7 +140,7 @@ def radar_chart(peer_ratios: dict, ratio_names: list) -> go.Figure:
 
 def football_field_chart(
     cmp: float, scenarios: dict, high_52w: float, low_52w: float,
-    pe_comps: dict = None, ev_ebitda_comps: dict = None, ddm_result: dict = None,
+    pe_comps: dict = None, ev_ebitda_comps: dict = None,
 ) -> go.Figure:
     """
     Football field valuation chart showing ranges across all valuation methods.
@@ -187,14 +187,6 @@ def football_field_chart(
         lows.append(ev_ebitda_comps["fair_value_low"])
         highs.append(ev_ebitda_comps["fair_value_high"])
         mids.append(ev_ebitda_comps["fair_value_median"])
-
-    # DDM
-    if ddm_result and ddm_result.get("applicable") and ddm_result["intrinsic_per_share"] > 0:
-        ddm_val = ddm_result["intrinsic_per_share"]
-        methods.append("DDM")
-        lows.append(ddm_val * 0.85)
-        highs.append(ddm_val * 1.15)
-        mids.append(ddm_val)
 
     fig = go.Figure()
 
@@ -365,22 +357,107 @@ def comps_waterfall_chart(comps: dict, method_name: str, cmp: float) -> go.Figur
 
 
 def peer_bar_chart(peer_data: dict, ratio_name: str) -> go.Figure:
-    """Horizontal bar chart comparing a single ratio across peers."""
+    """Horizontal bar chart comparing a single ratio across peers, each in a distinct color."""
     tickers = []
     values = []
     for ticker, ratios in peer_data.items():
         tickers.append(ticker.replace(".NS", ""))
         values.append(ratios.get(ratio_name, 0))
 
+    bar_colors = [COLORS["primary"], COLORS["secondary"], COLORS["accent"],
+                  COLORS["warning"], "#A78BFA", "#F472B6", "#38BDF8", "#FB923C"]
+    colors = [bar_colors[i % len(bar_colors)] for i in range(len(tickers))]
+
     fig = go.Figure(go.Bar(
         y=tickers, x=values, orientation="h",
-        marker=dict(color=COLORS["primary"]),
+        marker=dict(color=colors),
         text=[f"{v:.1f}" for v in values],
         textposition="outside",
     ))
 
     fig.update_layout(
         **CHART_LAYOUT, title=f"{ratio_name} — Peer Comparison",
-        height=300, xaxis_title=ratio_name,
+        height=max(250, 60 + len(tickers) * 40), xaxis_title=ratio_name,
+    )
+    return fig
+
+
+def shareholding_donut(shareholding: dict) -> go.Figure:
+    """Donut chart for shareholding pattern (Promoters/FII/DII/Retail)."""
+    labels = []
+    values = []
+    for k, v in shareholding.items():
+        if v > 0:
+            labels.append(k)
+            values.append(v)
+
+    if not values:
+        return go.Figure()
+
+    donut_colors = [COLORS["primary"], "#A78BFA", COLORS["accent"], COLORS["warning"]]
+
+    fig = go.Figure(go.Pie(
+        labels=labels, values=values,
+        hole=0.55,
+        marker=dict(colors=donut_colors[:len(labels)]),
+        textinfo="label+percent",
+        textfont=dict(color=COLORS["text"], size=12),
+        hovertemplate="%{label}: %{value:.1f}%<extra></extra>",
+    ))
+    fig.update_layout(
+        paper_bgcolor=COLORS["bg"],
+        font=dict(color=COLORS["text"]),
+        title=dict(text="Shareholding Pattern", font=dict(color=COLORS["text"], size=16)),
+        height=320,
+        margin=dict(l=20, r=20, t=50, b=20),
+        showlegend=True,
+        legend=dict(font=dict(color=COLORS["text"], size=11)),
+    )
+    return fig
+
+
+def returns_comparison_chart(returns: dict, ticker: str) -> go.Figure:
+    """Grouped bar chart comparing stock vs Nifty returns over 1Y/3Y/5Y."""
+    periods = []
+    stock_returns = []
+    bench_returns = []
+
+    for period in ["1Y", "3Y", "5Y"]:
+        data = returns.get(period, {})
+        s = data.get("stock")
+        b = data.get("benchmark")
+        if s is not None:
+            periods.append(period)
+            stock_returns.append(s)
+            bench_returns.append(b if b is not None else 0)
+
+    if not periods:
+        return go.Figure()
+
+    fig = go.Figure()
+
+    fig.add_trace(go.Bar(
+        x=periods, y=stock_returns,
+        name=ticker.replace(".NS", ""),
+        marker_color=COLORS["primary"],
+        text=[f"{v:+.1f}%" for v in stock_returns],
+        textposition="outside",
+    ))
+
+    fig.add_trace(go.Bar(
+        x=periods, y=bench_returns,
+        name="Nifty 50",
+        marker_color=COLORS["accent"],
+        text=[f"{v:+.1f}%" for v in bench_returns],
+        textposition="outside",
+    ))
+
+    fig.update_layout(
+        **CHART_LAYOUT,
+        title="Historical Returns vs Nifty 50",
+        yaxis_title="Return (%)",
+        barmode="group",
+        height=350,
+        legend=dict(font=dict(color=COLORS["text"])),
     )
     return fig
