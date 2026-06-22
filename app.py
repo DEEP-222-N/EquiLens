@@ -7,9 +7,11 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import os
-from dotenv import load_dotenv
-
-load_dotenv()
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
 
 from data_fetcher import get_stock_info, get_historical_prices, get_financials, extract_key_metrics, get_peer_data, get_shareholding_pattern, get_historical_returns
 from ratio_engine import (
@@ -89,7 +91,7 @@ with st.sidebar:
             peer_tickers.append(p)
 
     st.divider()
-    groq_key = os.getenv("GROQ_API_KEY", "")
+    groq_key = os.getenv("GROQ_API_KEY", "") or st.secrets.get("GROQ_API_KEY", "")
 
     analyze_btn = st.button("🔍 Analyze", use_container_width=True, type="primary")
     if st.button("🔄 Clear Cache", use_container_width=True):

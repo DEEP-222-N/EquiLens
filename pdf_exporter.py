@@ -71,9 +71,20 @@ class EquiLensPDF(FPDF):
 
     def _setup_fonts(self):
         font_dir = "C:/Windows/Fonts"
-        self.add_font("ArialUni", "", f"{font_dir}/arial.ttf")
-        self.add_font("ArialUni", "B", f"{font_dir}/arialbd.ttf")
-        self.add_font("ArialUni", "I", f"{font_dir}/ariali.ttf")
+        if os.path.exists(f"{font_dir}/arial.ttf"):
+            self.add_font("ArialUni", "", f"{font_dir}/arial.ttf")
+            self.add_font("ArialUni", "B", f"{font_dir}/arialbd.ttf")
+            self.add_font("ArialUni", "I", f"{font_dir}/ariali.ttf")
+        else:
+            font_dir = os.path.join(os.path.dirname(__file__), "fonts")
+            if os.path.exists(os.path.join(font_dir, "DejaVuSans.ttf")):
+                self.add_font("ArialUni", "", os.path.join(font_dir, "DejaVuSans.ttf"))
+                self.add_font("ArialUni", "B", os.path.join(font_dir, "DejaVuSans-Bold.ttf"))
+                self.add_font("ArialUni", "I", os.path.join(font_dir, "DejaVuSans-Oblique.ttf"))
+            else:
+                self.add_font("ArialUni", "", os.path.join("/usr/share/fonts/truetype/dejavu", "DejaVuSans.ttf"))
+                self.add_font("ArialUni", "B", os.path.join("/usr/share/fonts/truetype/dejavu", "DejaVuSans-Bold.ttf"))
+                self.add_font("ArialUni", "I", os.path.join("/usr/share/fonts/truetype/dejavu", "DejaVuSans-Oblique.ttf"))
 
     def cleanup(self):
         for f in self._chart_files:
