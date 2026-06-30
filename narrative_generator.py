@@ -165,7 +165,9 @@ def generate_narrative(
                 rating_result=rating_result, shareholding=shareholding,
                 hist_returns=hist_returns, sector=sector,
             )
-        except Exception:
+        except Exception as e:
+            import streamlit as st
+            st.warning(f"AI narrative failed: {e}. Using rule-based summary.")
             return _rule_based_summary(company_name, ratios, health_score, cmp, intrinsic_value, z_score, z_zone)
 
     return _rule_based_summary(company_name, ratios, health_score, cmp, intrinsic_value, z_score, z_zone)
@@ -192,7 +194,7 @@ def _groq_generate(
     )
 
     response = client.chat.completions.create(
-        model="llama-3.3-70b-versatile",
+        model="qwen/qwen3.6-27b",
         messages=[
             {
                 "role": "system",
