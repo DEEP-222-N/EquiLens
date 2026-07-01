@@ -16,9 +16,8 @@ Built with Streamlit, yfinance, and Plotly. Deployed on Streamlit Cloud.
 
 ### Valuation
 - **DCF Model** — 5-year free cash flow projections with auto-computed assumptions (WACC, growth, margins) derived from historical financials
-- **Dividend Discount Model (DDM)** — Gordon Growth Model for dividend-paying stocks
 - **Comparable Valuation** — PE and EV/EBITDA multiples from user-defined peers
-- **Blended Target Price** — Weighted average across DCF (40%), Comps (35%), DDM (15%), and Scenarios (10%)
+- **Blended Target Price** — Weighted average across DCF (45%), Comps (40%), and Scenarios (15%)
 - **Buy/Hold/Sell Rating** — Threshold-adjusted by financial health score, with confidence level based on method agreement
 - **Sensitivity Analysis** — WACC vs Terminal Growth heatmap + interactive sliders
 - **Football Field Chart** — All valuation ranges on one visual with CMP reference line
@@ -100,10 +99,9 @@ The target price blends multiple valuation methods:
 
 | Method | Weight | Source |
 |--------|--------|--------|
-| DCF | 40% | 5Y projected FCF discounted at WACC |
-| Comps | 35% | Average of PE-implied and EV/EBITDA-implied fair values from peers |
-| DDM | 15% | Gordon Growth Model (dividend-paying stocks only) |
-| Scenario | 10% | Midpoint of bear/bull DCF scenarios |
+| DCF | 45% | 5Y projected FCF discounted at WACC |
+| Comps | 40% | Average of PE-implied and EV/EBITDA-implied fair values from peers |
+| Scenario | 15% | Midpoint of bear/bull DCF scenarios |
 
 Rating thresholds are adjusted by the health score — companies with stronger fundamentals get a slightly lower bar for a BUY rating. Confidence is based on how many methods are available and how tightly they agree.
 
