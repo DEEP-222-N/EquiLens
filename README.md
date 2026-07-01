@@ -2,11 +2,13 @@
 
 Automated equity research tool for NSE-listed Indian companies. Enter a ticker, get a full research report — ratio analysis, multi-method valuation, peer benchmarking, AI narrative, and a Buy/Hold/Sell rating with target price.
 
-Built with Streamlit, yfinance, and Plotly.
+Built with Streamlit, yfinance, and Plotly. Deployed on Streamlit Cloud.
 
 ![Python](https://img.shields.io/badge/Python-3.10+-blue)
 ![Streamlit](https://img.shields.io/badge/Streamlit-1.30+-red)
 ![License](https://img.shields.io/badge/License-MIT-green)
+
+[![Open in Streamlit](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://equilens.streamlit.app)
 
 ---
 
@@ -34,7 +36,7 @@ Built with Streamlit, yfinance, and Plotly.
 - **Peer Benchmarking** — Radar charts, bar comparisons, and detailed ratio tables across competitors
 
 ### AI & Export
-- **AI Investment Summary** — LLM-generated narrative via Groq API (Llama 3.3 70B) with strengths and red flags; rule-based fallback when no API key is set
+- **AI Investment Summary** — LLM-generated narrative via Groq API (Qwen 3.6 27B) with strengths and red flags; rule-based fallback when no API key is set
 - **PDF Report Export** — Branded equity research PDF with rating, health score, narrative, and ratio tables
 
 ---
@@ -44,8 +46,8 @@ Built with Streamlit, yfinance, and Plotly.
 ### 1. Clone and install
 
 ```bash
-git clone https://github.com/your-username/equilens.git
-cd equilens
+git clone https://github.com/DEEP-222-N/EquiLens.git
+cd EquiLens
 pip install -r requirements.txt
 ```
 
@@ -76,7 +78,7 @@ streamlit run app.py
 ## Project Structure
 
 ```
-equilens/
+EquiLens/
 ├── app.py                  # Streamlit UI — 5-tab dashboard
 ├── data_fetcher.py         # yfinance data retrieval, shareholding, returns
 ├── ratio_engine.py         # Ratio computation, health scoring, sector thresholds
@@ -85,6 +87,7 @@ equilens/
 ├── narrative_generator.py  # AI narrative (Groq) + rule-based fallback
 ├── visualizations.py       # Plotly charts with dark theme
 ├── pdf_exporter.py         # PDF report generation (fpdf2)
+├── .devcontainer/          # Dev Container configuration
 ├── requirements.txt
 └── .env                    # API keys (not committed)
 ```
@@ -129,7 +132,7 @@ Trend detection gives improving ratios a +0.5 bonus and declining ones a -0.5 pe
 | Data | yfinance, BeautifulSoup (Screener.in scraping) |
 | Analysis | pandas, NumPy |
 | Visualization | Plotly |
-| AI | Groq API (Llama 3.3 70B) |
+| AI | Groq API (Qwen 3.6 27B) |
 | PDF | fpdf2 |
 
 ---
